@@ -1,0 +1,43 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Streamed rows slide in so new arrivals are easy to track. */
+@keyframes row-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.row-enter {
+  animation: row-enter 350ms ease-out;
+}
+
+/* Recessive scrollbars that fit the dark SOC aesthetic. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: theme('colors.slate.700') transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: theme('colors.slate.700');
+  border-radius: 4px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::selection {
+  background: theme('colors.sky.500 / 30%');
+}
