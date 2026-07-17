@@ -98,8 +98,11 @@ elsewhere), then restart Claude Desktop:
 
 On macOS/Linux drop the `cmd`/`/c` wrapper and use
 `"command": "npx", "args": ["tsx", "/path/to/SentinelFraud/mcp-server/index.ts"]`.
-To enable Gemini-written explanations, add
-`"env": { "GEMINI_API_KEY": "<your key>" }` to the server entry.
+
+The MCP server automatically loads `.env.local` from the repo root, so if your
+`GEMINI_API_KEY` lives there, no extra configuration is needed. Alternatively,
+add `"env": { "GEMINI_API_KEY": "<your key>" }` to the server entry — an
+explicit environment variable always takes precedence.
 
 ## Testing
 
