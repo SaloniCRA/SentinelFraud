@@ -47,11 +47,14 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    if (paused) return;
+  if (paused) return;
+
+  const timer = setInterval(() => {
     void ingest();
-    const timer = setInterval(() => void ingest(), POLL_INTERVAL_MS);
-    return () => clearInterval(timer);
-  }, [paused, ingest]);
+  }, POLL_INTERVAL_MS);
+
+  return () => clearInterval(timer);
+}, [paused, ingest]);
 
   const stats = useMemo(
     () => ({
@@ -119,7 +122,13 @@ export default function Dashboard() {
             onSelect={setSelected}
           />
         </div>
-        {selected ? <DetailPanel record={selected} onClose={() => setSelected(null)} /> : null}
+	{selected ? (
+  		<DetailPanel
+    			key={selected.transaction.id}
+    			record={selected}
+    			onClose={() => setSelected(null)}
+  />
+) : null}
       </main>
     </div>
   );

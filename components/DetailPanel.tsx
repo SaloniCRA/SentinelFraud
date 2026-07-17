@@ -37,10 +37,9 @@ export default function DetailPanel({
   const [error, setError] = useState(false);
   const { transaction: tx, result, enrichment } = record;
 
+
   useEffect(() => {
     const controller = new AbortController();
-    setExplain(null);
-    setError(false);
     fetch('/api/explain', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
