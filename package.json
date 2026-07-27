@@ -16,7 +16,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "mcp": "tsx mcp-server/index.ts"
+    "mcp": "tsx mcp-server/index.ts",
+    "mcp:remote": "tsx mcp-server/remote.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.0",
