@@ -2,12 +2,17 @@
  * SentinelFraud — synthetic transaction stream.
  *
  * Seeds 8 users with realistic baselines and emits a rolling stream of
- * transactions, ~10% of which are fraudulent (large amounts, foreign
- * countries, rapid bursts, middle-of-the-night timestamps).
+ * transactions, ~10% of which are fraudulent. Fraud patterns exercise every
+ * engine signal: large amounts, foreign countries, rapid bursts, 3am
+ * timestamps, anonymizing-network IPs, disposable emails, and impossible
+ * travel (a home-country charge immediately followed by one continents away).
  *
- * Uses a seedable PRNG (mulberry32) so runs are fully reproducible:
- * two streams created with the same seed and startTime produce identical
- * batches, which the unit tests rely on.
+ * Uses a seedable PRNG (mulberry32) so runs are fully reproducible: two
+ * streams created with the same seed and startTime produce identical batches,
+ * which the unit tests rely on.
+ *
+ * IP addresses are drawn from a bundled demo pool (see lib/enrichment/ip.ts
+ * DEMO_IP_MAP) so geolocation resolves offline and deterministically.
  */
 
 import type { Transaction, UserBaseline } from './fraud-engine';
@@ -33,6 +38,10 @@ export interface UserProfile {
   baseline: UserBaseline;
   currency: string;
   cardBin: string;
+  /** Demo "home" IP whose country matches the user's usual country. */
+  homeIp: string;
+  /** Non-disposable email domain the user normally transacts with. */
+  emailDomain: string;
   merchants: string[];
   categories: string[];
 }
@@ -46,6 +55,8 @@ const profile = (
   activeStart: number,
   activeEnd: number,
   cardBin: string,
+  homeIp: string,
+  emailDomain: string,
   merchants: string[],
   categories: string[],
 ): UserProfile => ({
@@ -58,6 +69,8 @@ const profile = (
   },
   currency,
   cardBin,
+  homeIp,
+  emailDomain,
   merchants,
   categories,
 });
@@ -73,6 +86,8 @@ export const USERS: UserProfile[] = [
     8,
     22,
     '411111',
+    '198.51.100.11',
+    'gmail.com',
     ['Blue Bottle Coffee', 'Whole Foods Market', 'Amazon.com', 'Shell Gas'],
     ['dining', 'groceries', 'retail', 'fuel'],
   ),
@@ -85,6 +100,8 @@ export const USERS: UserProfile[] = [
     7,
     21,
     '424242',
+    '198.51.100.11',
+    'outlook.com',
     ['Best Buy', 'Home Depot', 'Costco', 'Uber'],
     ['electronics', 'home', 'wholesale', 'transport'],
   ),
@@ -97,6 +114,8 @@ export const USERS: UserProfile[] = [
     6,
     20,
     '465942',
+    '198.51.100.24',
+    'bt-mail.example',
     ['Tesco', 'Pret A Manger', 'TfL Travel', 'Boots'],
     ['groceries', 'dining', 'transport', 'pharmacy'],
   ),
@@ -109,6 +128,8 @@ export const USERS: UserProfile[] = [
     7,
     21,
     '530127',
+    '198.51.100.37',
+    'web.example',
     ['REWE', 'Zalando', 'Deutsche Bahn', 'MediaMarkt'],
     ['groceries', 'retail', 'transport', 'electronics'],
   ),
@@ -121,6 +142,8 @@ export const USERS: UserProfile[] = [
     9,
     23,
     '374245',
+    '198.51.100.11',
+    'icloud.com',
     ['Delta Air Lines', 'Marriott Hotels', "Ruth's Chris", 'Apple Store'],
     ['travel', 'lodging', 'dining', 'electronics'],
   ),
@@ -133,6 +156,8 @@ export const USERS: UserProfile[] = [
     5,
     19,
     '608001',
+    '198.51.100.48',
+    'gmail.com',
     ['Flipkart', 'Swiggy', 'BigBasket', 'IRCTC'],
     ['retail', 'dining', 'groceries', 'transport'],
   ),
@@ -145,6 +170,8 @@ export const USERS: UserProfile[] = [
     8,
     22,
     '450140',
+    '198.51.100.53',
+    'gmail.com',
     ['Tim Hortons', 'Loblaws', 'Canadian Tire', 'Petro-Canada'],
     ['dining', 'groceries', 'home', 'fuel'],
   ),
@@ -157,13 +184,26 @@ export const USERS: UserProfile[] = [
     21,
     11,
     '516320',
+    '198.51.100.66',
+    'bigpond.example',
     ['Woolworths', 'Bunnings', 'Opal Transport', 'JB Hi-Fi'],
     ['groceries', 'home', 'transport', 'electronics'],
   ),
 ];
 
-/** Countries/merchants/BINs used only by the fraudulent patterns. */
-const FRAUD_COUNTRIES = ['RO', 'NG', 'VN', 'BR', 'UA', 'PH'];
+/** Foreign fraud origins: country + matching demo IP (see DEMO_IP_MAP). */
+const FRAUD_ORIGINS: { country: string; ip: string }[] = [
+  { country: 'RO', ip: '203.0.113.9' },
+  { country: 'NG', ip: '203.0.113.22' },
+  { country: 'VN', ip: '203.0.113.41' },
+  { country: 'BR', ip: '203.0.113.58' },
+  { country: 'UA', ip: '203.0.113.77' },
+  { country: 'PH', ip: '203.0.113.90' },
+];
+
+/** Demo IPs flagged as proxy/VPN/hosting in DEMO_IP_MAP. */
+const ANON_IPS = ['203.0.113.9', '203.0.113.41', '203.0.113.77', '203.0.113.90'];
+
 const FRAUD_BINS = ['531993', '426398', '510510', '676770'];
 const FRAUD_MERCHANTS = [
   'LuxeGoods Intl',
@@ -171,6 +211,13 @@ const FRAUD_MERCHANTS = [
   'CryptoXpress',
   'Global Gift Cards',
   'Prime Electronics HK',
+];
+const FRAUD_EMAIL_DOMAINS = [
+  'mailinator.com',
+  'guerrillamail.com',
+  'temp-mail.org',
+  'yopmail.com',
+  'trashmail.com',
 ];
 
 const FRAUD_RATE = 0.1;
@@ -193,7 +240,7 @@ export function createTransactionStream(options: StreamOptions = {}): Transactio
   const rand = mulberry32(options.seed ?? DEFAULT_SEED);
   let clock = options.startTime ?? GENESIS_TIME;
   let counter = 0;
-  /** Pending burst transactions queued to be emitted next. */
+  /** Pending burst/paired transactions queued to be emitted next. */
   const queue: Transaction[] = [];
 
   const baselines = new Map<string, UserBaseline>(
@@ -210,6 +257,7 @@ export function createTransactionStream(options: StreamOptions = {}): Transactio
   };
 
   const nextId = () => `txn-${String(++counter).padStart(5, '0')}`;
+  const fraudEmail = () => `acct-${Math.floor(rand() * 1_000_000)}@${pick(FRAUD_EMAIL_DOMAINS)}`;
 
   const makeTxn = (user: UserProfile, overrides: Partial<Transaction> = {}): Transaction => ({
     id: nextId(),
@@ -221,6 +269,8 @@ export function createTransactionStream(options: StreamOptions = {}): Transactio
     category: pick(user.categories),
     country: user.baseline.usualCountry,
     cardBin: user.cardBin,
+    ip: user.homeIp,
+    email: `${user.baseline.userId.replace(/-/g, '')}@${user.emailDomain}`,
     ...overrides,
   });
 
@@ -241,7 +291,7 @@ export function createTransactionStream(options: StreamOptions = {}): Transactio
     const { avgAmount } = user.baseline;
     const roll = rand();
 
-    if (roll < 0.3) {
+    if (roll < 0.25) {
       // Big spend: 6–15x the user's average at a suspicious merchant.
       return [
         makeTxn(user, {
@@ -251,21 +301,24 @@ export function createTransactionStream(options: StreamOptions = {}): Transactio
         }),
       ];
     }
-    if (roll < 0.55) {
-      // Foreign country + foreign card + elevated amount.
+    if (roll < 0.5) {
+      // Account takeover: home country/card, but the request originates from a
+      // foreign anonymizing network with a disposable email (2–4x amount).
       return [
         makeTxn(user, {
-          amount: round2(avgAmount * (2 + rand() * 3)),
-          country: pick(FRAUD_COUNTRIES),
-          cardBin: pick(FRAUD_BINS),
+          amount: round2(avgAmount * (2 + rand() * 2)),
           merchant: pick(FRAUD_MERCHANTS),
           category: 'retail',
+          ip: pick(ANON_IPS),
+          email: fraudEmail(),
         }),
       ];
     }
-    if (roll < 0.8) {
-      // Card-testing burst: 4 rapid transactions within seconds.
+    if (roll < 0.7) {
+      // Card-testing burst: 4 rapid txns via an anonymizing IP + disposable email.
       const merchant = pick(FRAUD_MERCHANTS);
+      const ip = pick(ANON_IPS);
+      const email = fraudEmail();
       const txns: Transaction[] = [];
       let ts = clock;
       for (let i = 0; i < 4; i++) {
@@ -274,6 +327,8 @@ export function createTransactionStream(options: StreamOptions = {}): Transactio
             amount: round2(Math.max(1.5, avgAmount * (0.8 + rand() * 1.5))),
             merchant,
             category: 'retail',
+            ip,
+            email,
             timestamp: ts,
           }),
         );
@@ -282,15 +337,32 @@ export function createTransactionStream(options: StreamOptions = {}): Transactio
       clock = ts;
       return txns;
     }
-    // Night spend: 3–8x average at 2–4am UTC.
-    return [
-      makeTxn(user, {
-        amount: round2(avgAmount * (3 + rand() * 5)),
-        merchant: pick(FRAUD_MERCHANTS),
-        category: 'retail',
-        timestamp: nightTimestamp(),
-      }),
-    ];
+    if (roll < 0.85) {
+      // Night spend: 3–8x average at 2–4am UTC.
+      return [
+        makeTxn(user, {
+          amount: round2(avgAmount * (3 + rand() * 5)),
+          merchant: pick(FRAUD_MERCHANTS),
+          category: 'retail',
+          timestamp: nightTimestamp(),
+        }),
+      ];
+    }
+    // Impossible travel: a normal home charge, then minutes later a charge from
+    // a foreign country/IP — a physically impossible relocation.
+    const home = makeTxn(user);
+    clock += 120_000 + Math.floor(rand() * 180_000); // 2–5 minutes later
+    const origin = pick(FRAUD_ORIGINS);
+    const abroad = makeTxn(user, {
+      amount: round2(avgAmount * (2 + rand() * 4)),
+      merchant: pick(FRAUD_MERCHANTS),
+      category: 'retail',
+      country: origin.country,
+      cardBin: pick(FRAUD_BINS), // stolen, foreign-issued card
+      ip: origin.ip,
+      email: fraudEmail(),
+    });
+    return [home, abroad];
   };
 
   const nextTransaction = (): Transaction => {
@@ -298,8 +370,8 @@ export function createTransactionStream(options: StreamOptions = {}): Transactio
     if (queued) return queued;
 
     // 10-30s of simulated time per transaction: with 8 users this keeps a
-    // user's normal cadence (~2-4 min) well outside the velocity window,
-    // so only genuine bursts (seconds apart) trip the velocity signal.
+    // user's normal cadence (~2-4 min) well outside the velocity window, so
+    // only genuine bursts (seconds apart) trip the velocity signal.
     clock += 10_000 + Math.floor(rand() * 20_000);
     const user = pick(USERS);
 

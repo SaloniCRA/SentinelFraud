@@ -2,8 +2,9 @@
  * SentinelFraud — server-side in-memory store.
  *
  * Owns the live transaction stream for the Next.js app: generates the next
- * transaction, enriches it via BIN lookup, scores it with the pure engine,
- * and keeps bounded history plus cumulative stats.
+ * transaction, enriches it across all sources, scores it with the pure engine
+ * (via the shared stateful scorer), and keeps bounded history plus cumulative
+ * stats.
  *
  * Cached on globalThis so Next.js dev-mode hot reloads and per-route module
  * instances all share one store.
@@ -13,17 +14,16 @@ import {
   CONFIG,
   categorizeReason,
   isFlagged,
-  scoreTransaction,
   type RiskResult,
   type Transaction,
-  type UserBaseline,
 } from './fraud-engine';
 import { createTransactionStream, DEFAULT_SEED, type TransactionStream } from './generator';
-import { lookupBin, type BinInfo } from './bin-lookup';
+import { enrichTransaction, type EnrichmentBundle } from './enrichment';
+import { createScorer, type Scorer } from './scoring';
 
 export interface ScoredRecord {
   transaction: Transaction;
-  enrichment: BinInfo;
+  enrichment: EnrichmentBundle;
   result: RiskResult;
   /** Epoch ms the server processed the transaction. */
   receivedAt: number;
@@ -39,28 +39,12 @@ export interface FraudStats {
 }
 
 const MAX_RECORDS = 500;
-const MAX_USER_TIMESTAMPS = 100;
-
-/**
- * Baseline for user ids the seeded stream doesn't know. Neutral by design:
- * with no history there is nothing to be anomalous against, so only
- * velocity and BIN/geo signals can fire.
- */
-function neutralBaseline(tx: Transaction): UserBaseline {
-  return {
-    userId: tx.userId,
-    avgAmount: Math.max(tx.amount, 1),
-    stdevAmount: Math.max(tx.amount * 0.5, 1),
-    usualCountry: tx.country,
-    activeHours: { start: 0, end: 23 },
-  };
-}
 
 export class FraudStore {
   private stream: TransactionStream;
+  private scorer: Scorer;
   private records: ScoredRecord[] = [];
   private byId = new Map<string, ScoredRecord>();
-  private userTimestamps = new Map<string, number[]>();
   private totals = {
     count: 0,
     flagged: 0,
@@ -72,6 +56,7 @@ export class FraudStore {
   constructor() {
     // Live app runs the seeded stream anchored to wall-clock "now".
     this.stream = createTransactionStream({ seed: DEFAULT_SEED, startTime: Date.now() });
+    this.scorer = createScorer(this.stream.baselines);
   }
 
   /** Generate, enrich, score, and store the next stream transaction. */
@@ -108,18 +93,8 @@ export class FraudStore {
   }
 
   private async scoreAndStore(tx: Transaction): Promise<ScoredRecord> {
-    const enrichment = await lookupBin(tx.cardBin);
-    const baseline = this.stream.baselines.get(tx.userId) ?? neutralBaseline(tx);
-    const recent = this.userTimestamps.get(tx.userId) ?? [];
-
-    const result = scoreTransaction(tx, baseline, {
-      recentUserTimestamps: recent,
-      binCountry: enrichment.country,
-    });
-
-    recent.push(tx.timestamp);
-    if (recent.length > MAX_USER_TIMESTAMPS) recent.splice(0, recent.length - MAX_USER_TIMESTAMPS);
-    this.userTimestamps.set(tx.userId, recent);
+    const enrichment = await enrichTransaction({ cardBin: tx.cardBin, ip: tx.ip, email: tx.email });
+    const { result } = this.scorer.score(tx, enrichment);
 
     const record: ScoredRecord = { transaction: tx, enrichment, result, receivedAt: Date.now() };
     this.records.push(record);

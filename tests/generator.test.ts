@@ -1,6 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { scoreTransaction, isFlagged } from '../lib/fraud-engine';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { categorizeReason, scoreTransaction, isFlagged } from '../lib/fraud-engine';
 import { createTransactionStream, DEFAULT_SEED, GENESIS_TIME, USERS } from '../lib/generator';
+import { enrichTransaction } from '../lib/enrichment';
+import { clearBinCache } from '../lib/enrichment/bin';
+import { clearIpCache } from '../lib/enrichment/ip';
+import { createScorer } from '../lib/scoring';
 
 describe('createTransactionStream', () => {
   it('is reproducible: identical seed and start time produce identical batches', () => {
@@ -81,5 +85,49 @@ describe('createTransactionStream', () => {
       return result.reasons.some((r) => r.startsWith('velocity '));
     });
     expect(velocityHits.length).toBeGreaterThan(0);
+  });
+});
+
+describe('generator + enrichment integration', () => {
+  // Stub fetch so BIN/IP lookups never touch the network: demo IPs resolve
+  // offline from DEMO_IP_MAP and BIN lookups degrade to the safe fallback.
+  beforeAll(() => {
+    clearBinCache();
+    clearIpCache();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('network disabled in tests');
+      }),
+    );
+  });
+  afterAll(() => vi.unstubAllGlobals());
+
+  it('produces transactions that trigger every v2 enrichment signal', async () => {
+    const stream = createTransactionStream({ seed: DEFAULT_SEED });
+    const batch = stream.generateBatch(400);
+    const scorer = createScorer(stream.baselines);
+    const seen = new Set<string>();
+
+    for (const tx of batch) {
+      const enrichment = await enrichTransaction({
+        cardBin: tx.cardBin,
+        ip: tx.ip,
+        email: tx.email,
+      });
+      const { result } = scorer.score(tx, enrichment);
+      for (const reason of result.reasons) seen.add(categorizeReason(reason));
+    }
+
+    expect(seen.has('ip-geo-mismatch')).toBe(true);
+    expect(seen.has('ip-anonymizer')).toBe(true);
+    expect(seen.has('email-risk')).toBe(true);
+    expect(seen.has('impossible-travel')).toBe(true);
+  });
+
+  it('populates ip and email on generated transactions', () => {
+    const [tx] = createTransactionStream({ seed: 5 }).generateBatch(1);
+    expect(tx.ip).toMatch(/^(\d{1,3}\.){3}\d{1,3}$/);
+    expect(tx.email).toContain('@');
   });
 });

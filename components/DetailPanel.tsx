@@ -91,8 +91,22 @@ export default function DetailPanel({
         <Field label="Card BIN" value={tx.cardBin} />
         <Field
           label="Issuer"
-          value={`${enrichment.bank}${enrichment.country ? ` (${enrichment.country})` : ''}`}
+          value={`${enrichment.bin.bank}${enrichment.bin.country ? ` (${enrichment.bin.country})` : ''}`}
         />
+        {enrichment.ip.country || tx.ip ? (
+          <Field
+            label="Origin IP"
+            value={`${tx.ip ?? 'unknown'}${enrichment.ip.country ? ` · ${enrichment.ip.country}` : ''}${
+              enrichment.ip.anonymized ? ' · proxy/VPN' : ''
+            }`}
+          />
+        ) : null}
+        {enrichment.email.domain ? (
+          <Field
+            label="Email domain"
+            value={`${enrichment.email.domain}${enrichment.email.disposable ? ' · disposable' : ''}`}
+          />
+        ) : null}
       </dl>
 
       <div>

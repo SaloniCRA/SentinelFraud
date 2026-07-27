@@ -44,6 +44,27 @@ export const CONFIG = {
   oddHour: {
     minHoursOutside: 2,
   },
+  /**
+   * v2 additive enrichment signals (Phase 1). Each is gated by `enabled` and
+   * fires ONLY when its enrichment context is supplied, so the original
+   * behavior and tests are unchanged. Each contributes `weight * intensity`
+   * with intensity in [0,1] (binary signals use intensity 1). Keeping every
+   * signal as one bounded [0,1] term is what lets Phase 4 learn the weights
+   * while the score stays an additive, per-signal-auditable sum.
+   */
+  signals: {
+    /** Origin IP's country differs from the card's (issuing) country. */
+    ipGeoMismatch: { enabled: true, weight: 25 },
+    /** Origin IP is a proxy / VPN / hosting / anonymizing network. */
+    ipAnonymizer: { enabled: true, weight: 20 },
+    /** Disposable email domain (full weight) or newly-seen domain (half). */
+    emailRisk: { enabled: true, weight: 20 },
+    /**
+     * Impossible travel: implied km/h between a user's consecutive
+     * transactions ramps points from `warnKmh` (0 pts) to `fullKmh` (full).
+     */
+    impossibleTravel: { enabled: true, weight: 30, warnKmh: 900, fullKmh: 5000 },
+  },
   /** Band thresholds (inclusive lower bounds on the final score). */
   bands: {
     medium: 35,
@@ -64,6 +85,10 @@ export interface Transaction {
   country: string;
   /** First 6 digits of the card number. */
   cardBin: string;
+  /** Origin IPv4 address (v2 enrichment). Optional for backward compatibility. */
+  ip?: string;
+  /** Account email address (v2 enrichment). Optional for backward compatibility. */
+  email?: string;
 }
 
 /** Per-user spending baseline: average amount, usual country, usual active hours. */
@@ -76,12 +101,29 @@ export interface UserBaseline {
   activeHours: { start: number; end: number };
 }
 
+/** Implied travel between a user's previous and current transaction. */
+export interface TravelContext {
+  distanceKm: number;
+  elapsedMinutes: number;
+  impliedKmh: number;
+}
+
 /** Caller-supplied context the pure engine cannot derive on its own. */
 export interface ScoreContext {
   /** Timestamps (epoch ms) of this user's PRIOR transactions, for velocity. */
   recentUserTimestamps?: number[];
   /** Card-issuing country from BIN enrichment, or null when unknown. */
   binCountry?: string | null;
+  /** Resolved country of the transaction's origin IP (v2), or null. */
+  ipCountry?: string | null;
+  /** Origin IP is a proxy / VPN / hosting / anonymizing network (v2). */
+  ipAnonymized?: boolean;
+  /** Email domain is a known disposable/throwaway service (v2). */
+  emailDisposable?: boolean;
+  /** Email domain has not been seen before for this user (v2). */
+  emailNewDomain?: boolean;
+  /** Implied travel vs the user's previous transaction (v2), or null. */
+  travel?: TravelContext | null;
 }
 
 export type RiskBand = 'low' | 'medium' | 'high';
@@ -95,7 +137,15 @@ export interface RiskResult {
 }
 
 export type SignalKey =
-  'amount-anomaly' | 'new-country' | 'velocity' | 'odd-hour' | 'bin-geo-mismatch';
+  | 'amount-anomaly'
+  | 'new-country'
+  | 'velocity'
+  | 'odd-hour'
+  | 'bin-geo-mismatch'
+  | 'ip-geo-mismatch'
+  | 'ip-anonymizer'
+  | 'email-risk'
+  | 'impossible-travel';
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
@@ -127,6 +177,12 @@ export function categorizeReason(reason: string): SignalKey | 'unknown' {
   if (reason.startsWith('velocity ')) return 'velocity';
   if (reason.startsWith('odd hour ')) return 'odd-hour';
   if (reason.startsWith('card issued ')) return 'bin-geo-mismatch';
+  if (reason.startsWith('ip country ')) return 'ip-geo-mismatch';
+  if (reason.startsWith('anonymizing network')) return 'ip-anonymizer';
+  if (reason.startsWith('disposable email') || reason.startsWith('newly-seen email')) {
+    return 'email-risk';
+  }
+  if (reason.startsWith('impossible travel ')) return 'impossible-travel';
   return 'unknown';
 }
 
@@ -134,11 +190,18 @@ export function categorizeReason(reason: string): SignalKey | 'unknown' {
  * Score a single transaction against the user's baseline.
  *
  * Signals:
- *  1. Amount anomaly  — z-score of amount vs the user's mean/stdev.
- *  2. New country     — transaction country differs from the usual country.
- *  3. Velocity        — more than N user transactions inside a short window.
- *  4. Odd hour        — far outside the user's usual active hours (UTC).
+ *  1. Amount anomaly   — z-score of amount vs the user's mean/stdev.
+ *  2. New country      — transaction country differs from the usual country.
+ *  3. Velocity         — more than N user transactions inside a short window.
+ *  4. Odd hour         — far outside the user's usual active hours (UTC).
  *  5. BIN/geo mismatch — card-issuing country differs from transaction country.
+ *  6. IP/geo mismatch  — origin IP country differs from the card country (v2).
+ *  7. Anonymizer       — origin IP is a proxy/VPN/hosting network (v2).
+ *  8. Email risk       — disposable or newly-seen email domain (v2).
+ *  9. Impossible travel — implied km/h between consecutive txns is too high (v2).
+ *
+ * Signals 6-9 are additive and fire only when their enrichment context is
+ * supplied, so callers using the original context see identical results.
  */
 export function scoreTransaction(
   tx: Transaction,
@@ -197,6 +260,54 @@ export function scoreTransaction(
   if (context.binCountry && context.binCountry !== tx.country) {
     points += CONFIG.weights.binGeoMismatch;
     reasons.push(`card issued ${context.binCountry}, txn in ${tx.country}`);
+  }
+
+  // The card's country of record: the BIN-issuing country when known, else
+  // the transaction country. Used by the IP/geo signal below.
+  const cardCountry = context.binCountry ?? tx.country;
+
+  // 6. IP / card-country mismatch (v2)
+  if (
+    CONFIG.signals.ipGeoMismatch.enabled &&
+    context.ipCountry &&
+    context.ipCountry !== cardCountry
+  ) {
+    points += CONFIG.signals.ipGeoMismatch.weight;
+    reasons.push(`ip country ${context.ipCountry} != card country ${cardCountry}`);
+  }
+
+  // 7. Anonymizing network (v2)
+  if (CONFIG.signals.ipAnonymizer.enabled && context.ipAnonymized) {
+    points += CONFIG.signals.ipAnonymizer.weight;
+    reasons.push('anonymizing network (proxy/vpn/hosting)');
+  }
+
+  // 8. Email domain risk (v2): disposable is the strong case; a newly-seen
+  // domain for the user is a weaker half-weight signal.
+  if (CONFIG.signals.emailRisk.enabled) {
+    if (context.emailDisposable) {
+      points += CONFIG.signals.emailRisk.weight;
+      reasons.push('disposable email domain');
+    } else if (context.emailNewDomain) {
+      points += Math.round(CONFIG.signals.emailRisk.weight * 0.5);
+      reasons.push('newly-seen email domain');
+    }
+  }
+
+  // 9. Impossible travel (v2): points ramp from warnKmh (0) to fullKmh (full).
+  if (CONFIG.signals.impossibleTravel.enabled && context.travel) {
+    const { warnKmh, fullKmh, weight } = CONFIG.signals.impossibleTravel;
+    const t = context.travel;
+    if (t.impliedKmh > warnKmh) {
+      const ramp = clamp((t.impliedKmh - warnKmh) / (fullKmh - warnKmh), 0, 1);
+      const travelPoints = Math.round(weight * ramp);
+      if (travelPoints > 0) {
+        points += travelPoints;
+        reasons.push(
+          `impossible travel ${t.distanceKm}km in ${t.elapsedMinutes}min (${t.impliedKmh} km/h)`,
+        );
+      }
+    }
   }
 
   const score = Math.round(clamp(points, 0, 100));

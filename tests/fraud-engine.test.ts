@@ -138,6 +138,89 @@ describe('scoreTransaction', () => {
   });
 });
 
+describe('scoreTransaction — v2 enrichment signals', () => {
+  it('leaves results unchanged when no v2 context is supplied', () => {
+    // A normal transaction with only the original context fields must score
+    // exactly as before the v2 signals were added.
+    const result = scoreTransaction(makeTx(), baseline, { binCountry: 'US' });
+    expect(result.score).toBe(0);
+    expect(result.reasons).toEqual([]);
+  });
+
+  it('adds the IP/geo mismatch signal when the origin IP country differs', () => {
+    const result = scoreTransaction(makeTx(), baseline, { ipCountry: 'RO' });
+    expect(result.reasons).toContain('ip country RO != card country US');
+    expect(result.score).toBe(CONFIG.signals.ipGeoMismatch.weight);
+  });
+
+  it('uses the BIN-issuing country as the card country for the IP signal', () => {
+    // IP in the US, but the card is issued in GB → still a mismatch.
+    const result = scoreTransaction(makeTx(), baseline, { binCountry: 'GB', ipCountry: 'US' });
+    expect(result.reasons).toContain('ip country US != card country GB');
+  });
+
+  it('adds the anonymizer signal for proxy/VPN/hosting IPs', () => {
+    const result = scoreTransaction(makeTx(), baseline, { ipAnonymized: true });
+    expect(result.reasons).toContain('anonymizing network (proxy/vpn/hosting)');
+    expect(result.score).toBe(CONFIG.signals.ipAnonymizer.weight);
+  });
+
+  it('adds the email-risk signal for disposable domains at full weight', () => {
+    const result = scoreTransaction(makeTx(), baseline, { emailDisposable: true });
+    expect(result.reasons).toContain('disposable email domain');
+    expect(result.score).toBe(CONFIG.signals.emailRisk.weight);
+  });
+
+  it('adds a half-weight signal for a newly-seen (non-disposable) domain', () => {
+    const result = scoreTransaction(makeTx(), baseline, { emailNewDomain: true });
+    expect(result.reasons).toContain('newly-seen email domain');
+    expect(result.score).toBe(Math.round(CONFIG.signals.emailRisk.weight * 0.5));
+  });
+
+  it('prefers the disposable reason over newly-seen when both hold', () => {
+    const result = scoreTransaction(makeTx(), baseline, {
+      emailDisposable: true,
+      emailNewDomain: true,
+    });
+    expect(result.reasons).toContain('disposable email domain');
+    expect(result.reasons).not.toContain('newly-seen email domain');
+  });
+
+  it('adds the impossible-travel signal, ramping with implied speed', () => {
+    const result = scoreTransaction(makeTx(), baseline, {
+      travel: { distanceKm: 8300, elapsedMinutes: 22, impliedKmh: 22636 },
+    });
+    expect(result.reasons).toContain('impossible travel 8300km in 22min (22636 km/h)');
+    expect(result.score).toBe(CONFIG.signals.impossibleTravel.weight); // saturated
+  });
+
+  it('does not fire impossible travel below the warn threshold', () => {
+    const result = scoreTransaction(makeTx(), baseline, {
+      travel: { distanceKm: 50, elapsedMinutes: 60, impliedKmh: 50 },
+    });
+    expect(result.reasons).toEqual([]);
+  });
+
+  it('keeps the score within 0-100 when all nine signals fire', () => {
+    const threeAm = Date.UTC(2026, 0, 5, 3, 0, 0);
+    const result = scoreTransaction(
+      makeTx({ amount: 5000, country: 'RO', timestamp: threeAm }),
+      baseline,
+      {
+        recentUserTimestamps: [threeAm - 5_000, threeAm - 15_000, threeAm - 30_000],
+        binCountry: 'GB',
+        ipCountry: 'VN',
+        ipAnonymized: true,
+        emailDisposable: true,
+        travel: { distanceKm: 9000, elapsedMinutes: 15, impliedKmh: 36000 },
+      },
+    );
+    expect(result.reasons).toHaveLength(9);
+    expect(result.score).toBe(100);
+    expect(result.band).toBe('high');
+  });
+});
+
 describe('bandForScore', () => {
   it('maps scores to bands at the configured thresholds', () => {
     expect(bandForScore(0)).toBe('low');
@@ -163,6 +246,13 @@ describe('categorizeReason', () => {
     expect(categorizeReason('velocity 4 txns in 90s')).toBe('velocity');
     expect(categorizeReason('odd hour 03:00 UTC (usual 08:00-22:00)')).toBe('odd-hour');
     expect(categorizeReason('card issued GB, txn in US')).toBe('bin-geo-mismatch');
+    expect(categorizeReason('ip country RO != card country US')).toBe('ip-geo-mismatch');
+    expect(categorizeReason('anonymizing network (proxy/vpn/hosting)')).toBe('ip-anonymizer');
+    expect(categorizeReason('disposable email domain')).toBe('email-risk');
+    expect(categorizeReason('newly-seen email domain')).toBe('email-risk');
+    expect(categorizeReason('impossible travel 8300km in 22min (22636 km/h)')).toBe(
+      'impossible-travel',
+    );
     expect(categorizeReason('something else')).toBe('unknown');
   });
 });

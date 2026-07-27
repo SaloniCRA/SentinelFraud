@@ -55,7 +55,7 @@ export async function POST(request: Request) {
   const { explanation, source } = await explainTransaction(
     record.transaction,
     record.result,
-    record.enrichment,
+    record.enrichment.bin,
   );
 
   return NextResponse.json({

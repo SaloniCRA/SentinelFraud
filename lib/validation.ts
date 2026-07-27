@@ -21,6 +21,11 @@ export const transactionSchema = z
     category: z.string().min(1).max(32),
     country: z.string().regex(/^[A-Z]{2}$/, 'country must be a 2-letter ISO code'),
     cardBin: z.string().regex(/^\d{6,8}$/, 'cardBin must be 6-8 digits'),
+    ip: z
+      .string()
+      .regex(/^(\d{1,3}\.){3}\d{1,3}$/, 'ip must be a dotted-quad IPv4 address')
+      .optional(),
+    email: z.string().max(254).email('email must be a valid address').optional(),
   })
   .strict();
 
