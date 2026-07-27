@@ -42,3 +42,10 @@ export const explainRequestSchema = z
   });
 
 export const recentTimestampsSchema = z.array(z.number().int().positive()).max(500);
+
+export const caseActionSchema = z
+  .object({
+    transactionId: z.string().regex(idPattern),
+    action: z.enum(['review', 'confirm', 'dismiss']),
+  })
+  .strict();

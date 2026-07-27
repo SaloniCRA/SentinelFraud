@@ -1,9 +1,9 @@
 /**
  * SentinelFraud MCP — shared tool definitions and handlers.
  *
- * The SAME four tools power both transports (stdio in index.ts, remote
- * Streamable HTTP in remote.ts), and both import the SAME pure engine, so a
- * transaction scores identically across the dashboard, HTTP API, and MCP.
+ * The SAME tools power both transports (stdio in index.ts, remote Streamable
+ * HTTP in remote.ts), and both import the SAME pure engine, so a transaction
+ * scores identically across the dashboard, HTTP API, and MCP.
  *
  * Trust boundary: `handleToolCall` takes an `exposeRawScore` flag. When false
  * (the default for remote callers), the numeric `score` / `averageScore` are
@@ -33,6 +33,7 @@ import { enrichTransaction, type EnrichmentBundle } from '../lib/enrichment';
 import { createScorer, neutralBaseline } from '../lib/scoring';
 import { explainTransaction } from '../lib/explain';
 import { recentTimestampsSchema, transactionSchema } from '../lib/validation';
+import { getCaseStore, PROPOSABLE_ACTIONS, type ProposableAction } from '../lib/cases';
 
 interface ScoredRecord {
   transaction: Transaction;
@@ -160,6 +161,26 @@ export const TOOLS = [
     description:
       'Aggregate fraud statistics over the deterministic seeded demo batch: totals, flagged count and rate, average score, band distribution, and top risk signals.',
     inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'propose_action',
+    description:
+      'PROPOSE (never execute) an action on a flagged transaction. Records the proposal for a human analyst to confirm in the SentinelFraud console and returns a confirmation message — it NEVER blocks a card, contacts a cardholder, dismisses a case, or changes any state. This is the "agent proposes, human disposes" boundary.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        transactionId: {
+          type: 'string',
+          description: 'Transaction id from list_flagged_transactions, e.g. "txn-00042".',
+        },
+        action: {
+          type: 'string',
+          enum: [...PROPOSABLE_ACTIONS],
+          description: 'The action to propose for human confirmation.',
+        },
+      },
+      required: ['transactionId', 'action'],
+    },
   },
 ];
 
@@ -291,6 +312,56 @@ export async function handleToolCall(
           topSignals: [...signals.entries()]
             .map(([signal, count]) => ({ signal, count }))
             .sort((a, b) => b.count - a.count),
+        },
+        exposeRawScore,
+      );
+    }
+
+    case 'propose_action': {
+      if (typeof args.transactionId !== 'string') {
+        return errorResult('transactionId (string) is required.');
+      }
+      if (
+        typeof args.action !== 'string' ||
+        !PROPOSABLE_ACTIONS.includes(args.action as ProposableAction)
+      ) {
+        return errorResult(`action must be one of: ${PROPOSABLE_ACTIONS.join(', ')}`);
+      }
+      const batch = await buildBatch();
+      const record = batch.find((r) => r.transaction.id === args.transactionId);
+      if (!record) {
+        return errorResult(
+          `Transaction ${args.transactionId} not found in the demo batch. Use list_flagged_transactions to get valid ids.`,
+        );
+      }
+      const action = args.action as ProposableAction;
+      const fraudCase = getCaseStore().recordProposal(
+        {
+          transactionId: record.transaction.id,
+          userId: record.transaction.userId,
+          score: record.result.score,
+          band: record.result.band,
+          reasons: record.result.reasons,
+          amount: record.transaction.amount,
+          currency: record.transaction.currency,
+          merchant: record.transaction.merchant,
+          country: record.transaction.country,
+        },
+        action,
+        'mcp-agent',
+      );
+      return jsonResult(
+        {
+          proposed: true,
+          executed: false,
+          transactionId: record.transaction.id,
+          action,
+          caseState: fraudCase.state,
+          band: record.result.band,
+          message:
+            `Proposed action "${action}" recorded for ${record.transaction.id}. ` +
+            'PROPOSAL ONLY — a human analyst must confirm it in the SentinelFraud console before ' +
+            'any account action is taken. Nothing has been executed.',
         },
         exposeRawScore,
       );

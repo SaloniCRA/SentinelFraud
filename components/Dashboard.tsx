@@ -7,6 +7,7 @@ import { formatPercent } from '../lib/format';
 import StatCard from './StatCard';
 import TransactionTable from './TransactionTable';
 import DetailPanel from './DetailPanel';
+import AuditLog from './AuditLog';
 
 const POLL_INTERVAL_MS = 1_500;
 const MAX_TABLE_ROWS = 60;
@@ -23,6 +24,8 @@ export default function Dashboard() {
   const [selected, setSelected] = useState<ScoredRecord | null>(null);
   const [paused, setPaused] = useState(false);
   const [connected, setConnected] = useState(true);
+  const [showAudit, setShowAudit] = useState(false);
+  const [caseRefresh, setCaseRefresh] = useState(0);
   const inFlight = useRef(false);
 
   const ingest = useCallback(async () => {
@@ -94,6 +97,17 @@ export default function Dashboard() {
             {!connected ? 'Reconnecting' : paused ? 'Paused' : 'Live'}
           </span>
           <button
+            onClick={() => setShowAudit((s) => !s)}
+            aria-pressed={showAudit}
+            className={`rounded-md border px-3 py-1.5 text-xs font-medium ${
+              showAudit
+                ? 'border-sky-500/50 bg-sky-500/10 text-sky-300'
+                : 'border-slate-700 text-slate-300 hover:bg-slate-800'
+            }`}
+          >
+            Audit log
+          </button>
+          <button
             onClick={() => setPaused((p) => !p)}
             className="rounded-md border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800"
           >
@@ -127,8 +141,10 @@ export default function Dashboard() {
             key={selected.transaction.id}
             record={selected}
             onClose={() => setSelected(null)}
+            onCaseChange={() => setCaseRefresh((n) => n + 1)}
           />
         ) : null}
+        {showAudit ? <AuditLog refreshKey={caseRefresh} /> : null}
       </main>
     </div>
   );

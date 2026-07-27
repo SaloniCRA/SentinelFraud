@@ -20,6 +20,7 @@ import {
 import { createTransactionStream, DEFAULT_SEED, type TransactionStream } from './generator';
 import { enrichTransaction, type EnrichmentBundle } from './enrichment';
 import { createScorer, type Scorer } from './scoring';
+import { getCaseStore } from './cases';
 
 export interface ScoredRecord {
   transaction: Transaction;
@@ -107,7 +108,21 @@ export class FraudStore {
     this.totals.count += 1;
     this.totals.scoreSum += result.score;
     this.totals.bands[result.band] += 1;
-    if (isFlagged(result)) this.totals.flagged += 1;
+    if (isFlagged(result)) {
+      this.totals.flagged += 1;
+      // Every flagged transaction opens an analyst case (human-in-the-loop).
+      getCaseStore().ensureOpen({
+        transactionId: tx.id,
+        userId: tx.userId,
+        score: result.score,
+        band: result.band,
+        reasons: result.reasons,
+        amount: tx.amount,
+        currency: tx.currency,
+        merchant: tx.merchant,
+        country: tx.country,
+      });
+    }
     for (const reason of result.reasons) {
       const key = categorizeReason(reason);
       this.totals.signals.set(key, (this.totals.signals.get(key) ?? 0) + 1);
