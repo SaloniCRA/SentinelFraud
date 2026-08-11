@@ -1,0 +1,126 @@
+{
+  "seed": 20240501,
+  "learned_weights": {
+    "amount_anomaly": {
+      "weight": 2.0529199316252966,
+      "ci95": [
+        1.5870721082286783,
+        2.5613855633264007
+      ]
+    },
+    "new_country": {
+      "weight": 0.31188755954087904,
+      "ci95": [
+        -0.014946345968599343,
+        0.5423833409482727
+      ]
+    },
+    "velocity": {
+      "weight": 2.43545193164084,
+      "ci95": [
+        1.8724136376512754,
+        2.9883033853841225
+      ]
+    },
+    "odd_hour": {
+      "weight": 0.10097819322336388,
+      "ci95": [
+        -0.2091534924241204,
+        0.3932726107393353
+      ]
+    },
+    "bin_geo_mismatch": {
+      "weight": 0.3008144738000712,
+      "ci95": [
+        -0.005631525232475714,
+        0.5837541962623466
+      ]
+    }
+  },
+  "calibration": {
+    "raw_score": {
+      "brier": 0.2351234485659882,
+      "ece": 0.3570421666459476
+    },
+    "platt": {
+      "brier": 0.04489198228015309,
+      "ece": 0.004941157083087954
+    },
+    "isotonic": {
+      "brier": 0.04609181043534066,
+      "ece": 0.018679492621437203
+    }
+  },
+  "conformal": {
+    "target_error": [
+      0.02,
+      0.05,
+      0.08,
+      0.1,
+      0.15
+    ],
+    "empirical_error": [
+      0.008823529411764706,
+      0.042666666666666665,
+      0.04875,
+      0.04875,
+      0.04875
+    ],
+    "review_rate": [
+      0.7875,
+      0.0625,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "coverage": [
+      0.2125,
+      0.9375,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  "autoencoder_ablation": {
+    "auc_5_signals": 0.7531319693213133,
+    "ae_signal_solo_auc": 0.6166773770133173,
+    "auc_6_signals": 0.7548717138478959,
+    "marginal_auc": 0.0017397445265825429
+  },
+  "ceiling": {
+    "accuracy_ceiling_model": "Logistic regression",
+    "accuracy_ceiling_auc": 0.802768441039415,
+    "monotone_gbm_auc": 0.7524378382114785,
+    "auditable_gap": 0.04789672719151916
+  },
+  "frontier": {
+    "Deterministic engine": {
+      "auc": 0.7531319693213133,
+      "interpretability": 1.0
+    },
+    "Calibrated engine": {
+      "auc": 0.7679103202165769,
+      "interpretability": 0.9
+    },
+    "Engine + AE signal": {
+      "auc": 0.7548717138478959,
+      "interpretability": 0.75
+    },
+    "Logistic regression (8f)": {
+      "auc": 0.802768441039415,
+      "interpretability": 0.6
+    },
+    "Monotone GBM": {
+      "auc": 0.7524378382114785,
+      "interpretability": 0.5
+    },
+    "Random forest": {
+      "auc": 0.782952761547678,
+      "interpretability": 0.25
+    },
+    "Gradient boosting": {
+      "auc": 0.784352509538032,
+      "interpretability": 0.2
+    }
+  }
+}

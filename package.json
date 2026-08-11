@@ -17,7 +17,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "mcp": "tsx mcp-server/index.ts",
-    "mcp:remote": "tsx mcp-server/remote.ts"
+    "mcp:remote": "tsx mcp-server/remote.ts",
+    "parity": "python benchmark/test_parity.py",
+    "benchmark": "python benchmark/run.py && python benchmark/make_figures.py",
+    "model:fit": "python model/train.py",
+    "model:eval": "python model/train.py"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.0",

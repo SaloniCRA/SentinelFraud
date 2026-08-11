@@ -20,3 +20,8 @@ coverage/
 *.tsbuildinfo
 .DS_Store
 npm-debug.log*
+
+# benchmark / model (Python)
+benchmark/data/
+__pycache__/
+*.pyc
