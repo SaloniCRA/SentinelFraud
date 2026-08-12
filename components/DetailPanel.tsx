@@ -5,6 +5,8 @@ import type { ScoredRecord } from '../lib/store';
 import type { CaseState } from '../lib/cases';
 import { formatMoney, formatTimeUtc } from '../lib/format';
 import RiskBadge from './RiskBadge';
+import SignalBars from './SignalBars';
+import AgentView from './AgentView';
 
 interface ExplainResponse {
   transactionId: string;
@@ -155,33 +157,42 @@ export default function DetailPanel({
             label="Origin IP"
             value={`${tx.ip ?? 'unknown'}${enrichment.ip.country ? ` · ${enrichment.ip.country}` : ''}${
               enrichment.ip.anonymized ? ' · proxy/VPN' : ''
-            }`}
+            }${enrichment.ip.isp ? ` · ${enrichment.ip.isp}` : ''}`}
           />
         ) : null}
         {enrichment.email.domain ? (
           <Field
             label="Email domain"
-            value={`${enrichment.email.domain}${enrichment.email.disposable ? ' · disposable' : ''}`}
+            value={`${enrichment.email.domain}${
+              enrichment.email.disposable
+                ? ' · disposable'
+                : enrichment.email.freeProvider
+                  ? ' · free provider'
+                  : ''
+            }`}
           />
         ) : null}
       </dl>
 
       <div>
-        <h3 className="text-[11px] uppercase tracking-wider text-slate-500">Signal Reasons</h3>
-        {result.reasons.length === 0 ? (
-          <p className="mt-2 text-xs text-slate-500">No individual signals fired.</p>
-        ) : (
-          <ul className="mt-2 flex flex-col gap-1.5">
+        <h3 className="text-[11px] uppercase tracking-wider text-slate-500">
+          Signal Contributions
+        </h3>
+        <div className="mt-2">
+          <SignalBars contributions={result.contributions} score={result.score} />
+        </div>
+        {result.reasons.length > 0 ? (
+          <ul className="mt-3 flex flex-col gap-1.5">
             {result.reasons.map((reason) => (
               <li
                 key={reason}
-                className="rounded-md border border-slate-700/80 bg-slate-800/60 px-2.5 py-1.5 font-mono text-xs text-slate-300"
+                className="rounded-md border border-slate-700/80 bg-slate-800/60 px-2.5 py-1.5 font-mono text-[11px] text-slate-300"
               >
                 {reason}
               </li>
             ))}
           </ul>
-        )}
+        ) : null}
       </div>
 
       <div>
@@ -213,6 +224,8 @@ export default function DetailPanel({
           )}
         </div>
       </div>
+
+      <AgentView record={record} />
 
       <div className="mt-auto border-t border-slate-800 pt-4">
         <h3 className="text-[11px] uppercase tracking-wider text-slate-500">Analyst Decision</h3>

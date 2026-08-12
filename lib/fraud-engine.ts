@@ -128,12 +128,25 @@ export interface ScoreContext {
 
 export type RiskBand = 'low' | 'medium' | 'high';
 
+/** One signal's audited contribution to the final score. */
+export interface SignalContribution {
+  signal: SignalKey;
+  points: number;
+  reason: string;
+}
+
 export interface RiskResult {
   /** Integer risk score, 0–100. */
   score: number;
   band: RiskBand;
   /** Short machine strings, e.g. "amount 12.4x user average". */
   reasons: string[];
+  /**
+   * Per-signal point breakdown that sums (pre-clamp) to the score — the score
+   * literally decomposing into named signals (DR2). Optional/additive: callers
+   * constructing a RiskResult by hand may omit it.
+   */
+  contributions?: SignalContribution[];
 }
 
 export type SignalKey =
@@ -209,7 +222,13 @@ export function scoreTransaction(
   context: ScoreContext = {},
 ): RiskResult {
   const reasons: string[] = [];
+  const contributions: SignalContribution[] = [];
   let points = 0;
+  const record = (signal: SignalKey, pts: number, reason: string) => {
+    points += pts;
+    reasons.push(reason);
+    contributions.push({ signal, points: pts, reason });
+  };
 
   // 1. Amount anomaly
   const sigma = Math.max(
@@ -226,16 +245,18 @@ export function scoreTransaction(
     );
     const amountPoints = Math.round(CONFIG.weights.amountAnomaly * ramp);
     if (amountPoints > 0) {
-      points += amountPoints;
       const ratio = tx.amount / Math.max(baseline.avgAmount, 0.01);
-      reasons.push(`amount ${ratio.toFixed(1)}x user average`);
+      record('amount-anomaly', amountPoints, `amount ${ratio.toFixed(1)}x user average`);
     }
   }
 
   // 2. New country
   if (tx.country !== baseline.usualCountry) {
-    points += CONFIG.weights.newCountry;
-    reasons.push(`new country ${tx.country} (usual ${baseline.usualCountry})`);
+    record(
+      'new-country',
+      CONFIG.weights.newCountry,
+      `new country ${tx.country} (usual ${baseline.usualCountry})`,
+    );
   }
 
   // 3. Velocity
@@ -244,22 +265,31 @@ export function scoreTransaction(
   ).length;
   const countInWindow = priorInWindow + 1;
   if (countInWindow > CONFIG.velocity.maxTxns) {
-    points += CONFIG.weights.velocity;
-    reasons.push(`velocity ${countInWindow} txns in ${CONFIG.velocity.windowMs / 1000}s`);
+    record(
+      'velocity',
+      CONFIG.weights.velocity,
+      `velocity ${countInWindow} txns in ${CONFIG.velocity.windowMs / 1000}s`,
+    );
   }
 
   // 4. Odd hour
   const hour = new Date(tx.timestamp).getUTCHours();
   const { start, end } = baseline.activeHours;
   if (hoursOutsideActiveRange(hour, start, end) >= CONFIG.oddHour.minHoursOutside) {
-    points += CONFIG.weights.oddHour;
-    reasons.push(`odd hour ${pad2(hour)}:00 UTC (usual ${pad2(start)}:00-${pad2(end)}:00)`);
+    record(
+      'odd-hour',
+      CONFIG.weights.oddHour,
+      `odd hour ${pad2(hour)}:00 UTC (usual ${pad2(start)}:00-${pad2(end)}:00)`,
+    );
   }
 
   // 5. BIN/geo mismatch
   if (context.binCountry && context.binCountry !== tx.country) {
-    points += CONFIG.weights.binGeoMismatch;
-    reasons.push(`card issued ${context.binCountry}, txn in ${tx.country}`);
+    record(
+      'bin-geo-mismatch',
+      CONFIG.weights.binGeoMismatch,
+      `card issued ${context.binCountry}, txn in ${tx.country}`,
+    );
   }
 
   // The card's country of record: the BIN-issuing country when known, else
@@ -272,25 +302,33 @@ export function scoreTransaction(
     context.ipCountry &&
     context.ipCountry !== cardCountry
   ) {
-    points += CONFIG.signals.ipGeoMismatch.weight;
-    reasons.push(`ip country ${context.ipCountry} != card country ${cardCountry}`);
+    record(
+      'ip-geo-mismatch',
+      CONFIG.signals.ipGeoMismatch.weight,
+      `ip country ${context.ipCountry} != card country ${cardCountry}`,
+    );
   }
 
   // 7. Anonymizing network (v2)
   if (CONFIG.signals.ipAnonymizer.enabled && context.ipAnonymized) {
-    points += CONFIG.signals.ipAnonymizer.weight;
-    reasons.push('anonymizing network (proxy/vpn/hosting)');
+    record(
+      'ip-anonymizer',
+      CONFIG.signals.ipAnonymizer.weight,
+      'anonymizing network (proxy/vpn/hosting)',
+    );
   }
 
   // 8. Email domain risk (v2): disposable is the strong case; a newly-seen
   // domain for the user is a weaker half-weight signal.
   if (CONFIG.signals.emailRisk.enabled) {
     if (context.emailDisposable) {
-      points += CONFIG.signals.emailRisk.weight;
-      reasons.push('disposable email domain');
+      record('email-risk', CONFIG.signals.emailRisk.weight, 'disposable email domain');
     } else if (context.emailNewDomain) {
-      points += Math.round(CONFIG.signals.emailRisk.weight * 0.5);
-      reasons.push('newly-seen email domain');
+      record(
+        'email-risk',
+        Math.round(CONFIG.signals.emailRisk.weight * 0.5),
+        'newly-seen email domain',
+      );
     }
   }
 
@@ -302,8 +340,9 @@ export function scoreTransaction(
       const ramp = clamp((t.impliedKmh - warnKmh) / (fullKmh - warnKmh), 0, 1);
       const travelPoints = Math.round(weight * ramp);
       if (travelPoints > 0) {
-        points += travelPoints;
-        reasons.push(
+        record(
+          'impossible-travel',
+          travelPoints,
           `impossible travel ${t.distanceKm}km in ${t.elapsedMinutes}min (${t.impliedKmh} km/h)`,
         );
       }
@@ -311,7 +350,7 @@ export function scoreTransaction(
   }
 
   const score = Math.round(clamp(points, 0, 100));
-  return { score, band: bandForScore(score), reasons };
+  return { score, band: bandForScore(score), reasons, contributions };
 }
 
 /**

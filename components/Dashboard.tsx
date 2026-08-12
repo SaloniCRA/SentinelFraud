@@ -8,9 +8,21 @@ import StatCard from './StatCard';
 import TransactionTable from './TransactionTable';
 import DetailPanel from './DetailPanel';
 import AuditLog from './AuditLog';
+import CaseQueue from './CaseQueue';
+import GeoPanel from './GeoPanel';
+import TrendsPanel, { type TrendPoint } from './TrendsPanel';
 
 const POLL_INTERVAL_MS = 1_500;
 const MAX_TABLE_ROWS = 60;
+const MAX_SERIES = 120;
+
+type View = 'live' | 'cases' | 'map' | 'trends';
+const VIEWS: { id: View; label: string }[] = [
+  { id: 'live', label: 'Live' },
+  { id: 'cases', label: 'Cases' },
+  { id: 'map', label: 'Map' },
+  { id: 'trends', label: 'Trends' },
+];
 
 interface Totals {
   count: number;
@@ -21,12 +33,14 @@ interface Totals {
 export default function Dashboard() {
   const [records, setRecords] = useState<ScoredRecord[]>([]);
   const [totals, setTotals] = useState<Totals>({ count: 0, flagged: 0, scoreSum: 0 });
+  const [series, setSeries] = useState<TrendPoint[]>([]);
   const [selected, setSelected] = useState<ScoredRecord | null>(null);
+  const [view, setView] = useState<View>('live');
   const [paused, setPaused] = useState(false);
   const [connected, setConnected] = useState(true);
-  const [showAudit, setShowAudit] = useState(false);
   const [caseRefresh, setCaseRefresh] = useState(0);
   const inFlight = useRef(false);
+  const totalsRef = useRef(totals);
 
   const ingest = useCallback(async () => {
     if (inFlight.current) return;
@@ -35,12 +49,20 @@ export default function Dashboard() {
       const res = await fetch('/api/score', { method: 'POST' });
       if (!res.ok) throw new Error(String(res.status));
       const record = (await res.json()) as ScoredRecord;
+      const next: Totals = {
+        count: totalsRef.current.count + 1,
+        flagged: totalsRef.current.flagged + (isFlagged(record.result) ? 1 : 0),
+        scoreSum: totalsRef.current.scoreSum + record.result.score,
+      };
+      totalsRef.current = next;
       setRecords((prev) => [record, ...prev].slice(0, MAX_TABLE_ROWS));
-      setTotals((prev) => ({
-        count: prev.count + 1,
-        flagged: prev.flagged + (isFlagged(record.result) ? 1 : 0),
-        scoreSum: prev.scoreSum + record.result.score,
-      }));
+      setTotals(next);
+      setSeries((s) =>
+        [
+          ...s,
+          { flaggedRate: next.flagged / next.count, avgRisk: next.scoreSum / next.count },
+        ].slice(-MAX_SERIES),
+      );
       setConnected(true);
     } catch {
       setConnected(false);
@@ -51,11 +73,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (paused) return;
-
-    const timer = setInterval(() => {
-      void ingest();
-    }, POLL_INTERVAL_MS);
-
+    const timer = setInterval(() => void ingest(), POLL_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [paused, ingest]);
 
@@ -97,17 +115,6 @@ export default function Dashboard() {
             {!connected ? 'Reconnecting' : paused ? 'Paused' : 'Live'}
           </span>
           <button
-            onClick={() => setShowAudit((s) => !s)}
-            aria-pressed={showAudit}
-            className={`rounded-md border px-3 py-1.5 text-xs font-medium ${
-              showAudit
-                ? 'border-sky-500/50 bg-sky-500/10 text-sky-300'
-                : 'border-slate-700 text-slate-300 hover:bg-slate-800'
-            }`}
-          >
-            Audit log
-          </button>
-          <button
             onClick={() => setPaused((p) => !p)}
             className="rounded-md border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800"
           >
@@ -128,24 +135,58 @@ export default function Dashboard() {
         <StatCard label="Average Risk" value={stats.avgRisk.toFixed(1)} sub="score / 100" />
       </section>
 
-      <main className="flex flex-col gap-4 lg:flex-row">
-        <div className="min-w-0 flex-1">
-          <TransactionTable
-            records={records}
-            selectedId={selected?.transaction.id ?? null}
-            onSelect={setSelected}
-          />
-        </div>
-        {selected ? (
-          <DetailPanel
-            key={selected.transaction.id}
-            record={selected}
-            onClose={() => setSelected(null)}
-            onCaseChange={() => setCaseRefresh((n) => n + 1)}
-          />
-        ) : null}
-        {showAudit ? <AuditLog refreshKey={caseRefresh} /> : null}
-      </main>
+      <nav
+        className="flex gap-1 rounded-lg border border-slate-800 bg-slate-900/60 p-1"
+        aria-label="Views"
+      >
+        {VIEWS.map((v) => (
+          <button
+            key={v.id}
+            onClick={() => setView(v.id)}
+            aria-current={view === v.id}
+            className={`rounded-md px-3 py-1.5 text-xs font-medium ${
+              view === v.id
+                ? 'bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/40'
+                : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+            }`}
+          >
+            {v.label}
+          </button>
+        ))}
+      </nav>
+
+      {view === 'live' ? (
+        <main className="flex flex-col gap-4 lg:flex-row">
+          <div className="min-w-0 flex-1">
+            <TransactionTable
+              records={records}
+              selectedId={selected?.transaction.id ?? null}
+              onSelect={setSelected}
+            />
+          </div>
+          {selected ? (
+            <DetailPanel
+              key={selected.transaction.id}
+              record={selected}
+              onClose={() => setSelected(null)}
+              onCaseChange={() => setCaseRefresh((n) => n + 1)}
+            />
+          ) : null}
+        </main>
+      ) : null}
+
+      {view === 'cases' ? (
+        <main className="flex flex-col gap-4 lg:flex-row">
+          <div className="min-w-0 flex-1">
+            <CaseQueue onCaseChange={() => setCaseRefresh((n) => n + 1)} />
+          </div>
+          <AuditLog refreshKey={caseRefresh} />
+        </main>
+      ) : null}
+
+      {view === 'map' ? <GeoPanel records={records} /> : null}
+
+      {view === 'trends' ? <TrendsPanel series={series} /> : null}
     </div>
   );
 }
