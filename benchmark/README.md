@@ -41,7 +41,7 @@ To run the same comparison on real labeled data, drop a CSV into
 where available. Two public options:
 
 - **IEEE-CIS Fraud Detection** (Kaggle) — has card, some geo, and time fields.
-- **ULB creditcard.csv** (Kaggle) — PCA-anonymized; the engine's *named* signals
+- **ULB creditcard.csv** (Kaggle) — PCA-anonymized; the engine's _named_ signals
   cannot be computed from it, so it is only usable for calibration/threshold
   studies, not a signal-level comparison.
 
