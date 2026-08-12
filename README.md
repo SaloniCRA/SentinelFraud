@@ -158,7 +158,7 @@ code-quality ─► test ─► redteam ─┐
 - **code-quality** — ESLint, Prettier, `tsc --noEmit`
 - **test** — Vitest (incl. dashboard/API/MCP parity)
 - **redteam** — `npm run redteam` (fails if injection-success-rate > 0) + engine parity
-- **security-scan** — `npm audit --audit-level=high` + gitleaks
+- **security-scan** — `npm audit` (reports high+, fails on critical) + gitleaks secret scan
 - **build** — `next build`
 - **deploy** — Vercel, `main` only. Action versions pinned; `permissions: contents: read`.
 
